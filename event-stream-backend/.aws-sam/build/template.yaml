@@ -1,0 +1,56 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Event Stream Backend
+Resources:
+  Api:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: prod
+  StartFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/handlers/stream.start
+      Runtime: nodejs20.x
+      Events:
+        StartApi:
+          Type: Api
+          Properties:
+            Path: /start
+            Method: post
+            RestApiId:
+              Ref: Api
+      CodeUri: StartFunction
+    Metadata:
+      SamResourceId: StartFunction
+  StopFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/handlers/stream.stop
+      Runtime: nodejs20.x
+      Events:
+        StopApi:
+          Type: Api
+          Properties:
+            Path: /stop
+            Method: post
+            RestApiId:
+              Ref: Api
+      CodeUri: StopFunction
+    Metadata:
+      SamResourceId: StopFunction
+  AnomalyFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/handlers/stream.anomaly
+      Runtime: nodejs20.x
+      Events:
+        AnomalyApi:
+          Type: Api
+          Properties:
+            Path: /anomaly
+            Method: post
+            RestApiId:
+              Ref: Api
+      CodeUri: AnomalyFunction
+    Metadata:
+      SamResourceId: AnomalyFunction
