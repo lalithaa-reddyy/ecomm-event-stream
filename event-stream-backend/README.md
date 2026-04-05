@@ -136,6 +136,59 @@ my-application$ sam logs -n putItemFunction --stack-name sam-app --tail
 
 You can find more information and examples about filtering Lambda function logs in the [AWS SAM CLI documentation](https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/serverless-sam-cli-logging.html).
 
+## Stream Handler Endpoint
+
+The application provides a single Lambda function (`StreamFunction`) with one API endpoint for event streaming and anomaly injection.
+
+### Endpoint: POST /stream
+
+Send a JSON body with an `action` parameter:
+
+```json
+{
+  "action": "start",
+  "rate": 10000
+}
+```
+
+**Actions:**
+
+- **start** - Generate and ingest a batch of synthetic events (default rate: 10,000).
+  - Parameters: `rate` (optional, default 10000)
+  - Example: `{ "action": "start", "rate": 5000 }`
+  - Response: `{ "batchId": "...", "rate": 5000, "minutes": 1 }`
+
+- **anomaly** - Inject an anomaly event.
+  - Example: `{ "action": "anomaly" }`
+  - Response: `{ "eventId": "...", "eventType": "ANOMALY", "timestamp": "...", ... }`
+
+### Environment Variables
+
+The `StreamFunction` Lambda requires two environment variables:
+
+- **RAW_BUCKET** - S3 bucket name where raw event batches are stored (prefix: `raw-events/`)
+- **AGG_TABLE** - DynamoDB table name for live minute-level aggregations (partition key: `id`, format: `live#YYYY-MM-DDTHH:MM`)
+
+### IAM Permissions
+
+The Lambda function includes policies for:
+- `s3:PutObject` on the raw events S3 bucket
+- `dynamodb:UpdateItem` and `dynamodb:PutItem` on the aggregations DynamoDB table
+
+### Deployment
+
+Deploy with parameters:
+
+```bash
+sam deploy --parameter-overrides RawBucketName=my-raw-bucket AggTableName=event-aggregations
+```
+
+Or use guided deployment:
+
+```bash
+sam deploy --guided
+```
+
 ## Unit tests
 
 Tests are defined in the `__tests__` folder in this project. Use `npm` to install the [Jest test framework](https://jestjs.io/) and run unit tests.

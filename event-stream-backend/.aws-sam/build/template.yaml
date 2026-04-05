@@ -1,56 +1,116 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
 Description: Event Stream Backend
+Parameters:
+  AggTableName:
+    Type: String
+    Default: event-stream-aggregations
+    Description: DynamoDB table to store live aggregations
 Resources:
   Api:
     Type: AWS::Serverless::Api
     Properties:
       StageName: prod
-  StartFunction:
+      Cors:
+        AllowMethods: '''GET, POST, OPTIONS'''
+        AllowHeaders: '''Content-Type, Authorization'''
+        AllowOrigin: '''*'''
+  StreamFunction:
     Type: AWS::Serverless::Function
     Properties:
-      Handler: src/handlers/stream.start
+      CodeUri: StreamFunction
+      Handler: stream.handler
       Runtime: nodejs20.x
+      Timeout: 60
+      MemorySize: 512
+      Environment:
+        Variables:
+          RAW_BUCKET:
+            Ref: RawBucket
+          ANOMALY_BUCKET:
+            Ref: AnomalyBucket
+          AGG_TABLE:
+            Ref: AggTableName
+          SNS_TOPIC_ARN:
+            Ref: AnomalyTopic
+      Policies:
+      - Statement:
+        - Effect: Allow
+          Action:
+          - s3:PutObject
+          Resource:
+            Fn::Sub: arn:aws:s3:::${RawBucket}/*
+        - Effect: Allow
+          Action:
+          - s3:PutObject
+          Resource:
+            Fn::Sub: arn:aws:s3:::${AnomalyBucket}/*
+        - Effect: Allow
+          Action:
+          - dynamodb:UpdateItem
+          - dynamodb:PutItem
+          - dynamodb:Scan
+          Resource:
+            Fn::Sub: arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${AggTableName}
+        - Effect: Allow
+          Action:
+          - sns:Publish
+          Resource:
+            Ref: AnomalyTopic
       Events:
-        StartApi:
+        StreamApi:
           Type: Api
           Properties:
-            Path: /start
+            Path: /stream
             Method: post
             RestApiId:
               Ref: Api
-      CodeUri: StartFunction
-    Metadata:
-      SamResourceId: StartFunction
-  StopFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      Handler: src/handlers/stream.stop
-      Runtime: nodejs20.x
-      Events:
-        StopApi:
+        StreamMetrics:
           Type: Api
           Properties:
-            Path: /stop
-            Method: post
+            Path: /stream
+            Method: get
             RestApiId:
               Ref: Api
-      CodeUri: StopFunction
     Metadata:
-      SamResourceId: StopFunction
-  AnomalyFunction:
-    Type: AWS::Serverless::Function
+      SamResourceId: StreamFunction
+  RawBucket:
+    Type: AWS::S3::Bucket
     Properties:
-      Handler: src/handlers/stream.anomaly
-      Runtime: nodejs20.x
-      Events:
-        AnomalyApi:
-          Type: Api
-          Properties:
-            Path: /anomaly
-            Method: post
-            RestApiId:
-              Ref: Api
-      CodeUri: AnomalyFunction
-    Metadata:
-      SamResourceId: AnomalyFunction
+      BucketName:
+        Fn::Sub: ${AWS::StackName}-raw-events-${AWS::AccountId}
+  AnomalyBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName:
+        Fn::Sub: ${AWS::StackName}-anomalies-${AWS::AccountId}
+  AnomalyTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: event-stream-anomalies
+      DisplayName: Event Stream Anomalies
+  AggTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName:
+        Ref: AggTableName
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+      - AttributeName: id
+        AttributeType: S
+      KeySchema:
+      - AttributeName: id
+        KeyType: HASH
+Outputs:
+  ApiEndpoint:
+    Description: API Gateway endpoint URL
+    Value:
+      Fn::Sub: https://${Api}.execute-api.${AWS::Region}.amazonaws.com/prod
+  RawBucketName:
+    Description: Generated S3 bucket for raw events
+    Value:
+      Ref: RawBucket
+  AnomalyBucketName:
+    Description: Generated S3 bucket for anomaly events
+    Value:
+      Ref: AnomalyBucket

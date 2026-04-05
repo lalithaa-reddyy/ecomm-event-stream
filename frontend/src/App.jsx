@@ -1,13 +1,14 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
+import "./index.css";
 
-const API_BASE = "https://qm2joqc8w8.execute-api.us-east-1.amazonaws.com/prod";
+const API_ENDPOINT = import.meta.env.VITE_API_BASE_URL;
 const EVENT_RATE_PER_MINUTE = 10000;
 const EVENT_RATE_PER_SECOND = Math.ceil(EVENT_RATE_PER_MINUTE / 60);
 const GENDERS = ["male", "female"];
 const SCHEMA_VERSION = "1.0";
 const EVENT_TYPES = ["page_view", "product_view", "add_to_cart", "order"];
 const BOT_EVENT_TYPES = ["page_view", "product_view"];
-const BOT_THRESHOLD = 5;
+const BOT_THRESHOLD = 100;
 const USER_SEGMENTS = ["student", "working_professional", "high_income", "frequent_shopper"];
 const CAMPAIGNS = [
   "cmp_mobile_summer",
@@ -28,9 +29,18 @@ const randomChoice = (items) => items[Math.floor(Math.random() * items.length)];
 const randomAgeGroup = () => randomChoice(AGE_GROUPS);
 const randomUserSegment = (ageGroup) => randomChoice(USER_SEGMENT_BY_AGE[ageGroup] || USER_SEGMENTS);
 const randomDeviceType = () => randomChoice(DEVICE_TYPES);
+const PRODUCT_CATEGORIES = [
+  "electronics", "fashion", "home_appliances", "beauty",
+  "sports", "books", "groceries", "toys"
+];
+const randomCategory = (eventType) =>
+  eventType === "page_view" && Math.random() < 0.3
+    ? randomChoice(["homepage", "search_results"])
+    : randomChoice(PRODUCT_CATEGORIES);
 const EVENT_FIELDS = [
   "event_id",
   "event_type",
+  "product_category",
   "anomaly_type",
   "event_timestamp",
   "ingestion_time",
@@ -152,43 +162,37 @@ const GEOLOCATIONS = [
     prefix: "14.139",
     city: "Bengaluru",
     state: "Karnataka",
-    country: "India",
-    type: "residential"
+    country: "India"
   },
   {
     prefix: "19.076",
     city: "Mumbai",
     state: "Maharashtra",
-    country: "India",
-    type: "residential"
+    country: "India"
   },
   {
     prefix: "23.022",
     city: "Ahmedabad",
     state: "Gujarat",
-    country: "India",
-    type: "residential"
+    country: "India"
   },
   {
     prefix: "18.520",
     city: "Pune",
     state: "Maharashtra",
-    country: "India",
-    type: "residential"
+    country: "India"
   },
   {
     prefix: "28.613",
     city: "New Delhi",
     state: "Delhi",
-    country: "India",
-    type: "residential"
+    country: "India"
   },
   {
     prefix: "12.971",
     city: "Bengaluru",
     state: "Karnataka",
-    country: "India",
-    type: "commercial"
+    country: "India"
   }
 ];
 
@@ -199,6 +203,7 @@ export default function App() {
   const [count, setCount] = useState(0);
   const [page, setPage] = useState(1);
   const [toast, setToast] = useState(null);
+  const streamIntervalRef = useRef(null);
 
   const showToast = (message, isError = false) => {
     setToast({ message, isError });
@@ -258,10 +263,12 @@ export default function App() {
     const priceUpdatesLastMin = options.price_updates_last_min ?? 0;
     const isSpike = options.is_spike ?? false;
     const spikeReason = options.spike_reason || null;
+    const productCategory = options.product_category || randomCategory(eventType);
 
     return {
       event_id: eventId,
       event_type: eventType,
+      product_category: productCategory,
       event_timestamp: eventTimestamp,
       ingestion_time: ingestionTime,
       schema_version: SCHEMA_VERSION,
@@ -311,6 +318,7 @@ export default function App() {
     const ipAddress = `${geo.prefix}.${Math.floor(Math.random() * 256)}.${Math.floor(Math.random() * 256)}`;
     const campaignId = randomChoice(CAMPAIGNS);
     const basePrice = randomNormalPrice();
+    const productCategory = randomCategory("product_view");
     const eventCount = 100;
     const baseTime = Date.now();
 
@@ -340,14 +348,15 @@ export default function App() {
         campaignId,
         ageGroup,
         gender: randomChoice(GENDERS),
-        price: basePrice
+        price: basePrice,
+        product_category: productCategory
       });
     });
   };
 
   const callAPI = async (endpoint, body = {}) => {
     try {
-      const res = await fetch(`${API_BASE}${endpoint}`, {
+      const res = await fetch(`${API_ENDPOINT}${endpoint}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body)
@@ -359,20 +368,14 @@ export default function App() {
     }
   };
 
-  const startStream = async () => {
+  const startStream = () => {
     setStatus("running");
-    await callAPI("/start", { rate: EVENT_RATE_PER_MINUTE });
+    showToast("Stream started - generating events every 5 seconds", false);
   };
 
-  const stopStream = async () => {
+  const stopStream = () => {
     setStatus("stopped");
-
-    try {
-      await callAPI("/stop");
-    } catch (err) {
-      console.error("Stop stream API error:", err);
-      showToast("Stream stopped locally", false);
-    }
+    showToast("Stream stopped", false);
   };
 
   const createPriceSpikeBurst = (type) => {
@@ -395,6 +398,7 @@ export default function App() {
     );
     let lastPrice = historicalPrices[historicalPrices.length - 1];
     const priceUpdatesLastMin = 6;
+    const productCategory = randomCategory("product_view");
 
     return Array.from({ length: eventCount }).map((_, index) => {
       const timestamp = new Date(baseTime + index * 250);
@@ -433,7 +437,8 @@ export default function App() {
         std_dev: stdDev,
         price_updates_last_min: priceUpdatesLastMin,
         is_spike: isSpike,
-        spike_reason: spikeReason
+        spike_reason: spikeReason,
+        product_category: productCategory
       });
       lastPrice = price;
       return event;
@@ -453,6 +458,7 @@ export default function App() {
     const failedAttempts = 2 + Math.floor(Math.random() * 2);
     const eventCount = 20;
     const baseTime = Date.now();
+    const productCategory = randomCategory("product_view");
 
     return Array.from({ length: eventCount }).map((_, index) => {
       const timestamp = new Date(baseTime + index * 220);
@@ -500,14 +506,15 @@ export default function App() {
         geo_mismatch: geoMismatch,
         failed_attempts: failedAttempts,
         is_fraud: isFraud,
-        fraud_reason: fraudReasons.length ? fraudReasons.join(", ") : null
+        fraud_reason: fraudReasons.length ? fraudReasons.join(", ") : null,
+        product_category: productCategory
       });
     });
   };
 
   const sendAnomaly = async (type) => {
     try {
-      await callAPI("/anomaly", { type });
+      await callAPI("/stream", { action: "anomaly", type });
 
       if (type === "bot_activity") {
         const botEvents = createBotBurst(type);
@@ -533,9 +540,91 @@ export default function App() {
     }
   };
 
-  // -----------------------------
-  // SIMULATED LIVE EVENTS (UI)
-  // -----------------------------
+  // Streaming effect: continuously call API every 5 seconds when running
+  useEffect(() => {
+    if (status === "running") {
+      // Add temporal variance to batch size (70% to 130% of expected rate)
+      const getVariableBatchSize = () => {
+        const variance = 0.7 + Math.random() * 0.6; // 0.7 to 1.3
+        return Math.floor(EVENT_RATE_PER_MINUTE * variance);
+      };
+
+      // Call API immediately on start with varying rate
+      callAPI("/stream", { action: "start", rate: getVariableBatchSize() });
+
+      // Then set up interval to call every 5 seconds with randomized rates
+      streamIntervalRef.current = setInterval(async () => {
+        try {
+          await callAPI("/stream", { action: "start", rate: getVariableBatchSize() });
+        } catch (err) {
+          console.error("Error calling stream API:", err);
+        }
+      }, 5000);
+
+      return () => {
+        if (streamIntervalRef.current) {
+          clearInterval(streamIntervalRef.current);
+          streamIntervalRef.current = null;
+        }
+      };
+    }
+  }, [status]);
+
+  // Category profiles for realistic data variance with volatility and temporal shifts
+  const CATEGORY_CONFIG = {
+    electronics:      { weight: 25, minPrice: 5000, maxPrice: 15000, conversionBias: 0.06, volatility: 1.8 },
+    fashion:          { weight: 20, minPrice: 500,  maxPrice: 3000,  conversionBias: 0.08, volatility: 2.2 },
+    home_appliances:  { weight: 10, minPrice: 3000, maxPrice: 12000, conversionBias: 0.03, volatility: 0.8 },
+    beauty:           { weight: 12, minPrice: 300,  maxPrice: 1500,  conversionBias: 0.07, volatility: 2.0 },
+    sports:           { weight: 8,  minPrice: 1000, maxPrice: 5000,  conversionBias: 0.04, volatility: 1.5 },
+    books:            { weight: 15, minPrice: 200,  maxPrice: 800,   conversionBias: 0.10, volatility: 1.3 },
+    groceries:        { weight: 18, minPrice: 100,  maxPrice: 500,   conversionBias: 0.05, volatility: 0.9 },
+    toys:             { weight: 12, minPrice: 500,  maxPrice: 2500,  conversionBias: 0.04, volatility: 1.6 }
+  };
+
+  // Simple hash for deterministic randomness per minute per category
+  const getCategoryVariance = (category, minuteSeed) => {
+    const hash = (minuteSeed * 73856093 ^ category.charCodeAt(0) * 19349663) | 0;
+    return 0.7 + ((Math.abs(hash) % 100) / 100) * 0.6; // 0.7 to 1.3 variance
+  };
+
+  const getWeightedCategory = () => {
+    const categories = Object.keys(CATEGORY_CONFIG);
+    const minuteBucketSeed = Math.floor(Date.now() / 60000); // Changes every minute
+    
+    const totalWeight = Object.values(CATEGORY_CONFIG).reduce((sum, p, idx) => {
+      const categoryVariance = getCategoryVariance(categories[idx], minuteBucketSeed);
+      return sum + (p.weight * categoryVariance);
+    }, 0);
+    
+    let rand = Math.random() * totalWeight;
+    for (const cat of categories) {
+      const catVariance = getCategoryVariance(cat, Math.floor(Date.now() / 60000));
+      rand -= CATEGORY_CONFIG[cat].weight * catVariance;
+      if (rand <= 0) return cat;
+    }
+    return categories[0];
+  };
+
+  const getWeightedEventType = () => {
+    const rand = Math.random();
+    if (rand < 0.40) return 'page_view';
+    if (rand < 0.75) return 'product_view';
+    if (rand < 0.95) return 'add_to_cart';
+    return 'order';
+  };
+
+  const getCategoryPrice = (category) => {
+    const config = CATEGORY_CONFIG[category];
+    if (!config) return Number((Math.random() * 150 + 20).toFixed(2));
+    
+    // Add volatility: some categories have wider price swings
+    const volatilityFactor = 1 + (Math.random() - 0.5) * (config.volatility - 1);
+    const adjustedMax = Math.floor(config.maxPrice * volatilityFactor);
+    const minPrice = config.minPrice;
+    return Math.floor(Math.random() * (adjustedMax - minPrice)) + minPrice;
+  };
+
   useEffect(() => {
     if (status === "running") {
       const interval = setInterval(() => {
@@ -554,7 +643,7 @@ export default function App() {
             const userAddress = USER_ADDRESSES[Math.floor(Math.random() * USER_ADDRESSES.length)];
             const geo = GEOLOCATIONS[Math.floor(Math.random() * GEOLOCATIONS.length)];
             const device = DEVICE_PROFILES[Math.floor(Math.random() * DEVICE_PROFILES.length)];
-            const eventType = randomChoice(EVENT_TYPES);
+            let eventType = getWeightedEventType();
             const ageGroup = randomAgeGroup();
             const userSegment = randomUserSegment(ageGroup);
             const deviceType = randomDeviceType();
@@ -579,7 +668,19 @@ export default function App() {
               : device.browser.toLowerCase().includes("safari")
               ? "safari"
               : device.browser.toLowerCase();
-            const price = Number((Math.random() * 150 + 20).toFixed(2));
+
+            // Category-driven event generation
+            const productCategory = getWeightedCategory();
+            const categoryConfig = CATEGORY_CONFIG[productCategory];
+
+            // Apply category-specific conversion bias
+            if (eventType === "add_to_cart" && Math.random() < categoryConfig.conversionBias) {
+              eventType = "order";
+            }
+            
+            // Only calculate price for orders (revenue-bearing events)
+            const price = eventType === "order" ? getCategoryPrice(productCategory) : null;
+            const orderValue = eventType === "order" ? price : null;
 
             const key = `${ipAddress}|${userId}|${deviceId}`;
             const priorBotCount = botCountMap[key] || 0;
@@ -589,12 +690,13 @@ export default function App() {
               newBotCounts[key] = currentBotCount + 1;
             }
 
-            const isAnomaly = isBot || Math.random() < 0.06;
+            const isAnomaly = isBot; // Only mark as anomaly if bot detected, don't generate random anomalies
             const anomalyType = isBot ? "bot_activity" : null;
 
             return {
               event_id: eventId,
               event_type: eventType,
+              product_category: productCategory,
               event_timestamp: eventTimestamp,
               ingestion_time: ingestionTime,
               schema_version: SCHEMA_VERSION,
@@ -616,6 +718,7 @@ export default function App() {
               browser,
               ip_address: ipAddress,
               price,
+              order_value: orderValue,
               is_anomaly: isAnomaly,
               anomaly_type: anomalyType
             };
@@ -630,8 +733,9 @@ export default function App() {
     }
   }, [status]);
 
+
   // pagination
-  const pageSize = 10;
+  const pageSize = 100;
   const paginated = events.slice((page - 1) * pageSize, page * pageSize);
 
   const riskSummary = {
@@ -641,7 +745,7 @@ export default function App() {
 
   return (
     <div style={styles.container}>
-      <h1 style={styles.title}>📊 India E-commerce Event Stream</h1>
+      <h1 style={styles.title}>E-commerce Event Stream</h1>
 
       {/* TOP CONTROLS */}
       <div style={styles.grid}>
@@ -976,6 +1080,18 @@ const styles = {
     borderRadius: "10px",
     cursor: "pointer",
     boxShadow: "0 8px 18px rgba(37, 99, 235, 0.18)",
+    transition: "transform 0.2s ease, background 0.2s ease"
+  },
+
+  secondaryBtn: {
+    background: "#475569",
+    color: "#fff",
+    padding: "12px 18px",
+    marginRight: "12px",
+    border: "none",
+    borderRadius: "10px",
+    cursor: "pointer",
+    boxShadow: "0 8px 18px rgba(71, 85, 105, 0.16)",
     transition: "transform 0.2s ease, background 0.2s ease"
   },
 
