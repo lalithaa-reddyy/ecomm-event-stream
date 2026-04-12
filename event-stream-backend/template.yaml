@@ -1,5 +1,10 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
+# Template for the Event Stream Backend used in the demo.
+# This SAM template defines a single Lambda-backed API (StreamFunction),
+# two S3 buckets (raw events and anomalies), an SNS topic for notifications,
+# and a DynamoDB table used for aggregations. Environment variables for the
+# Lambda are wired to these resources so the function can write/read them.
 Description: Event Stream Backend
 
 Parameters:
@@ -25,8 +30,8 @@ Resources:
       CodeUri: src/handlers
       Handler: stream.handler
       Runtime: nodejs20.x
-      Timeout: 60
-      MemorySize: 512
+      Timeout: 90
+      MemorySize: 1024
       Environment:
         Variables:
           RAW_BUCKET: !Ref RawBucket
@@ -83,6 +88,13 @@ Resources:
     Properties:
       TopicName: event-stream-anomalies
       DisplayName: Event Stream Anomalies
+
+  AnomalyEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref AnomalyTopic
+      Protocol: email
+      Endpoint: evokeriskteam@gmail.com
 
   AggTable:
     Type: AWS::DynamoDB::Table

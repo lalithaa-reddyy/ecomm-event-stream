@@ -1,5 +1,12 @@
 # event-stream-backend
 
+# Presentation notes
+This README contains background documentation for the demo backend. Key points to highlight during a presentation:
+
+- The Lambda `StreamFunction` both *generates* synthetic events (when asked) and *ingests* anomalies submitted by the frontend.
+- Aggregations are computed in the Lambda and stored in DynamoDB (table configured by `AGG_TABLE`).
+- The dashboard queries the Lambda via `GET /stream` to display precomputed metrics — the dashboard does not compute revenue itself.
+
 This project contains source code and supporting files for a serverless application that you can deploy with the AWS Serverless Application Model (AWS SAM) command line interface (CLI). It includes the following files and folders:
 
 - `src` - Code for the application's Lambda function.

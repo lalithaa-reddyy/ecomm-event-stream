@@ -1,8 +1,10 @@
 const crypto = require("crypto");
+const fs = require("fs");
 const { S3Client, PutObjectCommand } = require("@aws-sdk/client-s3");
 const { DynamoDBClient } = require("@aws-sdk/client-dynamodb");
 const { DynamoDBDocumentClient, UpdateCommand, ScanCommand } = require("@aws-sdk/lib-dynamodb");
 const { SNSClient, PublishCommand } = require("@aws-sdk/client-sns");
+const parquet = require("parquetjs-lite");
 
 // AWS clients (reuse between invocations)
 const s3 = new S3Client({});
@@ -28,7 +30,52 @@ function logEvent(type, payload = {}) {
 async function writeRawToS3Object(key, body, bucket) {
     const bucketName = bucket || process.env.RAW_BUCKET;
     if (!bucketName) throw new Error('Bucket name not provided');
-    await s3.send(new PutObjectCommand({ Bucket: bucketName, Key: key, Body: JSON.stringify(body), ContentType: 'application/json' }));
+    
+    // Convert key from .json to .parquet
+    const parquetKey = key.replace(/\.json$/, '.parquet');
+    
+    // Define schema for the event data
+    const schema = new parquet.ParquetSchema({
+        eventId: { type: 'UTF8', optional: false },
+        eventType: { type: 'UTF8', optional: false },
+        product_category: { type: 'UTF8', optional: true },
+        campaignId: { type: 'UTF8', optional: true },
+        deviceType: { type: 'UTF8', optional: true },
+        city: { type: 'UTF8', optional: true },
+        segment: { type: 'UTF8', optional: true },
+        ageGroup: { type: 'UTF8', optional: true },
+        isAnomaly: { type: 'BOOLEAN', optional: true },
+        anomalyType: { type: 'UTF8', optional: true },
+        orderValue: { type: 'DOUBLE', optional: true },
+        timestamp: { type: 'UTF8', optional: true }
+    });
+    
+    // Create writer
+    const writer = await parquet.ParquetWriter.openFile(schema, `/tmp/batch.parquet`);
+    
+    // Ensure body is an array
+    const records = Array.isArray(body) ? body : [body];
+    
+    // Write records
+    for (const record of records) {
+        await writer.appendRow(record);
+    }
+    
+    // Close writer and get buffer
+    await writer.close();
+    
+    // Read the temporary file and upload to S3
+    const fileBuffer = fs.readFileSync('/tmp/batch.parquet');
+    
+    await s3.send(new PutObjectCommand({ 
+        Bucket: bucketName, 
+        Key: parquetKey, 
+        Body: fileBuffer, 
+        ContentType: 'application/octet-stream' 
+    }));
+    
+    // Clean up temporary file
+    fs.unlinkSync('/tmp/batch.parquet');
 }
 
 async function updateAggregationCounts(countsByMinute) {
@@ -218,6 +265,27 @@ async function generateAndIngestBatch(rate) {
         return USER_SEGMENTS[0];
     };
 
+    // Weighted age group distribution based on user behavior
+    // (traffic, conversion rate, purchase frequency)
+    const AGE_GROUP_WEIGHTS = {
+        '13-18': 8,      // Teens: browsing-heavy, low purchase power
+        '19-25': 18,     // Students/early career: price-sensitive, high traffic
+        '26-35': 32,     // Peak earning: highest conversion & purchase value
+        '36-45': 22,     // Established professionals: regular shoppers
+        '46-55': 12,     // Stable income: loyal customers
+        '55+': 8         // Smaller but valuable segment
+    };
+
+    const getWeightedAgeGroup = () => {
+        const totalWeight = Object.values(AGE_GROUP_WEIGHTS).reduce((s, w) => s + w, 0);
+        let rand = Math.random() * totalWeight;
+        for (const ageGroup of AGE_GROUPS) {
+            rand -= AGE_GROUP_WEIGHTS[ageGroup] || 1;
+            if (rand <= 0) return ageGroup;
+        }
+        return AGE_GROUPS[0];
+    };
+
     // Weighted campaign distribution
     const CAMPAIGN_WEIGHTS = {
         'cmp_flash_deal': 25,
@@ -310,7 +378,7 @@ async function generateAndIngestBatch(rate) {
             deviceType:  r(DEVICE_TYPES),
             city:        getWeightedCity(),
             segment:     getWeightedSegment(),
-            ageGroup:    r(AGE_GROUPS),
+            ageGroup:    getWeightedAgeGroup(),
             isAnomaly,
             anomalyType: isAnomaly ? r(ANOMALY_TYPES) : null,
             orderValue,
@@ -406,7 +474,7 @@ async function generateAndIngestBatch(rate) {
         try {
             const key = `raw-events/start/batch-${batchId}.json`;
             await writeRawToS3Object(key, events);
-            console.info(`Wrote generated batch to S3: batch-${batchId}.json`);
+            console.info(`Wrote generated batch to S3: batch-${batchId}.parquet`);
         } catch (err) {
             console.error('Failed to write batch to S3:', err.message);
         }

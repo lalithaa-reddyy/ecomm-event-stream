@@ -18,6 +18,12 @@ const CAMPAIGNS = [
   "cmp_member_special"
 ];
 const AGE_GROUPS = ["18-24", "25-34", "35-44", "45-54"];
+const AGE_GROUP_WEIGHTS = {
+  "18-24": 16,    // Younger: high traffic, price-sensitive, mobile-first
+  "25-34": 36,    // Peak earning: highest conversion & purchase value
+  "35-44": 28,    // Established: regular loyal shoppers
+  "45-54": 20     // Experienced: high-value purchases
+};
 const USER_SEGMENT_BY_AGE = {
   "18-24": ["student", "frequent_shopper"],
   "25-34": ["working_professional", "frequent_shopper", "high_income"],
@@ -26,7 +32,15 @@ const USER_SEGMENT_BY_AGE = {
 };
 const DEVICE_TYPES = ["mobile", "desktop", "tablet"];
 const randomChoice = (items) => items[Math.floor(Math.random() * items.length)];
-const randomAgeGroup = () => randomChoice(AGE_GROUPS);
+const randomAgeGroup = () => {
+  const totalWeight = Object.values(AGE_GROUP_WEIGHTS).reduce((s, w) => s + w, 0);
+  let rand = Math.random() * totalWeight;
+  for (const ageGroup of AGE_GROUPS) {
+    rand -= AGE_GROUP_WEIGHTS[ageGroup] || 1;
+    if (rand <= 0) return ageGroup;
+  }
+  return AGE_GROUPS[0];
+};
 const randomUserSegment = (ageGroup) => randomChoice(USER_SEGMENT_BY_AGE[ageGroup] || USER_SEGMENTS);
 const randomDeviceType = () => randomChoice(DEVICE_TYPES);
 const PRODUCT_CATEGORIES = [

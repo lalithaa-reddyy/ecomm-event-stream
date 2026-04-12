@@ -96,7 +96,6 @@ function OverviewDashboard({ metrics }) {
         <StatBox label="Total Events"  value={fmt(metrics?.totalEvents)}                       sub={`${fmt(metrics?.dataPoints)} minutes tracked`}      accent="#63b3ed" />
         <StatBox label="Avg / Minute"  value={avgPerMin}                                        sub="events per minute"                                  accent="#68d391" />
         <StatBox label="Total Revenue" value={fmtCur(metrics?.revenueStats?.total_revenue)}    sub={`${fmt(metrics?.revenueStats?.order_count)} orders`} accent="#f6ad55" />
-        <StatBox label="Anomalies"     value={fmt(metrics?.anomalyStats?.total_anomalies)}      sub="detected in stream"                                 accent="#fc8181" />
       </div>
 
       {metrics && Object.keys(metrics.eventsByType).length > 0 && (

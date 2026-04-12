@@ -1,8 +1,10 @@
 const crypto = require("crypto");
+const fs = require("fs");
 const { S3Client, PutObjectCommand } = require("@aws-sdk/client-s3");
 const { DynamoDBClient } = require("@aws-sdk/client-dynamodb");
 const { DynamoDBDocumentClient, UpdateCommand, ScanCommand } = require("@aws-sdk/lib-dynamodb");
 const { SNSClient, PublishCommand } = require("@aws-sdk/client-sns");
+const parquet = require("parquetjs-lite");
 
 // AWS clients (reuse between invocations)
 const s3 = new S3Client({});
@@ -28,7 +30,52 @@ function logEvent(type, payload = {}) {
 async function writeRawToS3Object(key, body, bucket) {
     const bucketName = bucket || process.env.RAW_BUCKET;
     if (!bucketName) throw new Error('Bucket name not provided');
-    await s3.send(new PutObjectCommand({ Bucket: bucketName, Key: key, Body: JSON.stringify(body), ContentType: 'application/json' }));
+    
+    // Convert key from .json to .parquet
+    const parquetKey = key.replace(/\.json$/, '.parquet');
+    
+    // Define schema for the event data
+    const schema = new parquet.ParquetSchema({
+        eventId: { type: 'UTF8', optional: false },
+        eventType: { type: 'UTF8', optional: false },
+        product_category: { type: 'UTF8', optional: true },
+        campaignId: { type: 'UTF8', optional: true },
+        deviceType: { type: 'UTF8', optional: true },
+        city: { type: 'UTF8', optional: true },
+        segment: { type: 'UTF8', optional: true },
+        ageGroup: { type: 'UTF8', optional: true },
+        isAnomaly: { type: 'BOOLEAN', optional: true },
+        anomalyType: { type: 'UTF8', optional: true },
+        orderValue: { type: 'DOUBLE', optional: true },
+        timestamp: { type: 'UTF8', optional: true }
+    });
+    
+    // Create writer
+    const writer = await parquet.ParquetWriter.openFile(schema, `/tmp/batch.parquet`);
+    
+    // Ensure body is an array
+    const records = Array.isArray(body) ? body : [body];
+    
+    // Write records
+    for (const record of records) {
+        await writer.appendRow(record);
+    }
+    
+    // Close writer and get buffer
+    await writer.close();
+    
+    // Read the temporary file and upload to S3
+    const fileBuffer = fs.readFileSync('/tmp/batch.parquet');
+    
+    await s3.send(new PutObjectCommand({ 
+        Bucket: bucketName, 
+        Key: parquetKey, 
+        Body: fileBuffer, 
+        ContentType: 'application/octet-stream' 
+    }));
+    
+    // Clean up temporary file
+    fs.unlinkSync('/tmp/batch.parquet');
 }
 
 async function updateAggregationCounts(countsByMinute) {
@@ -166,13 +213,13 @@ async function generateAndIngestBatch(rate) {
     
     // Category profiles: traffic weight, min price, max price, conversion bias (affects add_to_cart → order rate)
     const CATEGORY_PROFILES = {
-        'electronics':      { weight: 15, minPrice: 5000, maxPrice: 15000, conversionBias: 0.06, volatility: 1.8 },
+        'electronics':      { weight: 8, minPrice: 5000, maxPrice: 15000, conversionBias: 0.06, volatility: 1.8 },
         'fashion':          { weight: 20, minPrice: 500,  maxPrice: 3000,  conversionBias: 0.08, volatility: 2.2 },
         'home_appliances':  { weight: 10, minPrice: 3000, maxPrice: 12000, conversionBias: 0.03, volatility: 0.8 },
         'beauty':           { weight: 12, minPrice: 300,  maxPrice: 1500,  conversionBias: 0.07, volatility: 2.0 },
         'sports':           { weight: 8,  minPrice: 1000, maxPrice: 5000,  conversionBias: 0.04, volatility: 1.5 },
         'books':            { weight: 15, minPrice: 200,  maxPrice: 800,   conversionBias: 0.10, volatility: 1.3 },
-        'groceries':        { weight: 28, minPrice: 100,  maxPrice: 500,   conversionBias: 0.05, volatility: 0.9 },
+        'groceries':        { weight: 40, minPrice: 100,  maxPrice: 500,   conversionBias: 0.05, volatility: 0.9 },
         'toys':             { weight: 12, minPrice: 500,  maxPrice: 2500,  conversionBias: 0.04, volatility: 1.6 }
     };
 
@@ -216,6 +263,27 @@ async function generateAndIngestBatch(rate) {
             if (rand <= 0) return segment;
         }
         return USER_SEGMENTS[0];
+    };
+
+    // Weighted age group distribution based on user behavior
+    // (traffic, conversion rate, purchase frequency)
+    const AGE_GROUP_WEIGHTS = {
+        '13-18': 8,      // Teens: browsing-heavy, low purchase power
+        '19-25': 18,     // Students/early career: price-sensitive, high traffic
+        '26-35': 32,     // Peak earning: highest conversion & purchase value
+        '36-45': 22,     // Established professionals: regular shoppers
+        '46-55': 12,     // Stable income: loyal customers
+        '55+': 8         // Smaller but valuable segment
+    };
+
+    const getWeightedAgeGroup = () => {
+        const totalWeight = Object.values(AGE_GROUP_WEIGHTS).reduce((s, w) => s + w, 0);
+        let rand = Math.random() * totalWeight;
+        for (const ageGroup of AGE_GROUPS) {
+            rand -= AGE_GROUP_WEIGHTS[ageGroup] || 1;
+            if (rand <= 0) return ageGroup;
+        }
+        return AGE_GROUPS[0];
     };
 
     // Weighted campaign distribution
@@ -310,7 +378,7 @@ async function generateAndIngestBatch(rate) {
             deviceType:  r(DEVICE_TYPES),
             city:        getWeightedCity(),
             segment:     getWeightedSegment(),
-            ageGroup:    r(AGE_GROUPS),
+            ageGroup:    getWeightedAgeGroup(),
             isAnomaly,
             anomalyType: isAnomaly ? r(ANOMALY_TYPES) : null,
             orderValue,
@@ -406,7 +474,7 @@ async function generateAndIngestBatch(rate) {
         try {
             const key = `raw-events/start/batch-${batchId}.json`;
             await writeRawToS3Object(key, events);
-            console.info(`Wrote generated batch to S3: batch-${batchId}.json`);
+            console.info(`Wrote generated batch to S3: batch-${batchId}.parquet`);
         } catch (err) {
             console.error('Failed to write batch to S3:', err.message);
         }

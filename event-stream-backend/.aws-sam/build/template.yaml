@@ -21,8 +21,8 @@ Resources:
       CodeUri: StreamFunction
       Handler: stream.handler
       Runtime: nodejs20.x
-      Timeout: 60
-      MemorySize: 512
+      Timeout: 90
+      MemorySize: 1024
       Environment:
         Variables:
           RAW_BUCKET:
@@ -89,6 +89,13 @@ Resources:
     Properties:
       TopicName: event-stream-anomalies
       DisplayName: Event Stream Anomalies
+  AnomalyEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn:
+        Ref: AnomalyTopic
+      Protocol: email
+      Endpoint: evokeriskteam@gmail.com
   AggTable:
     Type: AWS::DynamoDB::Table
     Properties:
