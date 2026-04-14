@@ -31,7 +31,6 @@ async function writeRawToS3Object(key, body, bucket) {
     const bucketName = bucket || process.env.RAW_BUCKET;
     if (!bucketName) throw new Error('Bucket name not provided');
     
-    // Convert key from .json to .parquet
     const parquetKey = key.replace(/\.json$/, '.parquet');
     
     // Define schema for the event data
@@ -213,13 +212,13 @@ async function generateAndIngestBatch(rate) {
     
     // Category profiles: traffic weight, min price, max price, conversion bias (affects add_to_cart → order rate)
     const CATEGORY_PROFILES = {
-        'electronics':      { weight: 15, minPrice: 5000, maxPrice: 15000, conversionBias: 0.06, volatility: 1.8 },
+        'electronics':      { weight: 8, minPrice: 5000, maxPrice: 15000, conversionBias: 0.06, volatility: 1.8 },
         'fashion':          { weight: 20, minPrice: 500,  maxPrice: 3000,  conversionBias: 0.08, volatility: 2.2 },
         'home_appliances':  { weight: 10, minPrice: 3000, maxPrice: 12000, conversionBias: 0.03, volatility: 0.8 },
         'beauty':           { weight: 12, minPrice: 300,  maxPrice: 1500,  conversionBias: 0.07, volatility: 2.0 },
         'sports':           { weight: 8,  minPrice: 1000, maxPrice: 5000,  conversionBias: 0.04, volatility: 1.5 },
         'books':            { weight: 15, minPrice: 200,  maxPrice: 800,   conversionBias: 0.10, volatility: 1.3 },
-        'groceries':        { weight: 28, minPrice: 100,  maxPrice: 500,   conversionBias: 0.05, volatility: 0.9 },
+        'groceries':        { weight: 40, minPrice: 100,  maxPrice: 500,   conversionBias: 0.05, volatility: 0.9 },
         'toys':             { weight: 12, minPrice: 500,  maxPrice: 2500,  conversionBias: 0.04, volatility: 1.6 }
     };
 

@@ -31,7 +31,6 @@ async function writeRawToS3Object(key, body, bucket) {
     const bucketName = bucket || process.env.RAW_BUCKET;
     if (!bucketName) throw new Error('Bucket name not provided');
     
-    // Convert key from .json to .parquet
     const parquetKey = key.replace(/\.json$/, '.parquet');
     
     // Define schema for the event data

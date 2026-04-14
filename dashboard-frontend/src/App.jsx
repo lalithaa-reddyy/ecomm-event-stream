@@ -115,7 +115,6 @@ function OverviewDashboard({ metrics }) {
                   <div style={{ height:4, background:"#2d3748", borderRadius:4, overflow:"hidden", marginBottom:4 }}>
                     <div style={{ height:"100%", width:`${p}%`, background:c.text, borderRadius:4 }} />
                   </div>
-                  <div style={{ fontSize:11, color:"#4a5568" }}>{p}% of total</div>
                 </div>
               );
             })}

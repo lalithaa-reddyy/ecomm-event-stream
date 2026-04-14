@@ -212,10 +212,7 @@ const GEOLOCATIONS = [
 
 export default function App() {
   const [status, setStatus] = useState("stopped");
-  const [events, setEvents] = useState([]);
   const [anomalyEvents, setAnomalyEvents] = useState([]);
-  const [count, setCount] = useState(0);
-  const [page, setPage] = useState(1);
   const [toast, setToast] = useState(null);
   const streamIntervalRef = useRef(null);
 
@@ -639,122 +636,13 @@ export default function App() {
     return Math.floor(Math.random() * (adjustedMax - minPrice)) + minPrice;
   };
 
-  useEffect(() => {
-    if (status === "running") {
-      const interval = setInterval(() => {
-        setEvents(prev => {
-          const recentEvents = prev.slice(0, 100);
-          const botCountMap = recentEvents.reduce((map, evt) => {
-            if (BOT_EVENT_TYPES.includes(evt.event_type) && evt.ip_address && evt.user_id && evt.device_id) {
-              const key = `${evt.ip_address}|${evt.user_id}|${evt.device_id}`;
-              map[key] = (map[key] || 0) + 1;
-            }
-            return map;
-          }, {});
-
-          const newBotCounts = {};
-          const newEvents = Array.from({ length: EVENT_RATE_PER_SECOND }).map(() => {
-            const userAddress = USER_ADDRESSES[Math.floor(Math.random() * USER_ADDRESSES.length)];
-            const geo = GEOLOCATIONS[Math.floor(Math.random() * GEOLOCATIONS.length)];
-            const device = DEVICE_PROFILES[Math.floor(Math.random() * DEVICE_PROFILES.length)];
-            let eventType = getWeightedEventType();
-            const ageGroup = randomAgeGroup();
-            const userSegment = randomUserSegment(ageGroup);
-            const deviceType = randomDeviceType();
-            const ipAddress = `${geo.prefix}.${Math.floor(Math.random() * 256)}.${Math.floor(Math.random() * 256)}`;
-            const timestamp = new Date();
-            const eventTimestamp = timestamp.toISOString();
-            const ingestionTime = new Date(timestamp.getTime() + 1000).toISOString();
-            const eventId = makeEventId();
-            const userId = `user_${Math.floor(Math.random() * 9000) + 1000}`;
-            const campaignId = randomChoice(CAMPAIGNS);
-            const gender = randomChoice(GENDERS);
-            const deviceId = `dev_${Math.floor(Math.random() * 900000) + 100000}`;
-            const os = device.os.toLowerCase().includes("android")
-              ? "android"
-              : device.os.toLowerCase().includes("ios")
-              ? "ios"
-              : device.os.toLowerCase().includes("windows")
-              ? "windows"
-              : "macos";
-            const browser = device.browser.toLowerCase().includes("chrome")
-              ? "chrome"
-              : device.browser.toLowerCase().includes("safari")
-              ? "safari"
-              : device.browser.toLowerCase();
-
-            // Category-driven event generation
-            const productCategory = getWeightedCategory();
-            const categoryConfig = CATEGORY_CONFIG[productCategory];
-
-            // Apply category-specific conversion bias
-            if (eventType === "add_to_cart" && Math.random() < categoryConfig.conversionBias) {
-              eventType = "order";
-            }
-            
-            // Only calculate price for orders (revenue-bearing events)
-            const price = eventType === "order" ? getCategoryPrice(productCategory) : null;
-            const orderValue = eventType === "order" ? price : null;
-
-            const key = `${ipAddress}|${userId}|${deviceId}`;
-            const priorBotCount = botCountMap[key] || 0;
-            const currentBotCount = newBotCounts[key] || 0;
-            const isBot = BOT_EVENT_TYPES.includes(eventType) && priorBotCount + currentBotCount + 1 >= BOT_THRESHOLD;
-            if (BOT_EVENT_TYPES.includes(eventType)) {
-              newBotCounts[key] = currentBotCount + 1;
-            }
-
-            const isAnomaly = isBot; // Only mark as anomaly if bot detected, don't generate random anomalies
-            const anomalyType = isBot ? "bot_activity" : null;
-
-            return {
-              event_id: eventId,
-              event_type: eventType,
-              product_category: productCategory,
-              event_timestamp: eventTimestamp,
-              ingestion_time: ingestionTime,
-              schema_version: SCHEMA_VERSION,
-              year: timestamp.getUTCFullYear(),
-              month: timestamp.getUTCMonth() + 1,
-              day: timestamp.getUTCDate(),
-              hour: timestamp.getUTCHours(),
-              campaign_id: campaignId,
-              country: "India",
-              region: userAddress.state,
-              city: userAddress.city,
-              user_id: userId,
-              age_group: ageGroup,
-              gender,
-              user_segment: userSegment,
-              device_id: deviceId,
-              device_type: deviceType,
-              os,
-              browser,
-              ip_address: ipAddress,
-              price,
-              order_value: orderValue,
-              is_anomaly: isAnomaly,
-              anomaly_type: anomalyType
-            };
-          });
-
-          setCount(prev => prev + newEvents.length);
-          return [...newEvents, ...prev].slice(0, 100);
-        });
-      }, 1000);
-
-      return () => clearInterval(interval);
-    }
-  }, [status]);
 
 
-  // pagination
-  const pageSize = 100;
-  const paginated = events.slice((page - 1) * pageSize, page * pageSize);
 
+  // Risk summary from injected anomalies
   const riskSummary = {
-    anomalies: events.filter(event => event.is_anomaly).length,
-    total: events.length
+    anomalies: anomalyEvents.filter(event => event.is_anomaly).length,
+    total: anomalyEvents.length
   };
 
   return (
@@ -796,87 +684,12 @@ export default function App() {
 
         {/* STATS */}
         <div style={styles.card}>
-          <h3>Live Metrics</h3>
-          <p>Total Events: <b>{count}</b></p>
+          <h3>Stream Config</h3>
           <p>Live Rate: <b>{EVENT_RATE_PER_MINUTE.toLocaleString()}</b> events/min</p>
           <p>Events/sec: ~{EVENT_RATE_PER_SECOND}</p>
           <div style={styles.statTagRow}>
-            <span style={styles.statTag}>Anomalies {riskSummary.anomalies}</span>
-            <span style={styles.statTag}>Recent events {riskSummary.total}</span>
+            <span style={styles.statTag}>Injected Anomalies {riskSummary.anomalies}</span>
           </div>
-        </div>
-      </div>
-
-      {/* EVENTS TABLE */}
-      <div style={styles.tableCard}>
-        <div style={styles.tableCardHeader}>
-          <div>
-            <h3 style={styles.sectionTitle}>Live Event Stream</h3>
-            <p style={styles.sectionSubtitle}>
-              India-only ecommerce event activity with campaign and user behavior details.
-            </p>
-          </div>
-          <div style={styles.tableHeaderBadges}>
-            <span style={styles.detailBadge}>{events.length} recent events</span>
-            <span style={styles.detailBadge}>{pageSize} rows per page</span>
-          </div>
-        </div>
-
-        <div style={styles.tableWrapper}>
-          <table style={styles.table}>
-            <thead>
-              <tr style={styles.tableHeadRow}>
-              {EVENT_FIELDS.map(field => (
-                <th key={field} style={styles.tableHeader}>{field}</th>
-              ))}
-            </tr>
-            </thead>
-
-            <tbody>
-              {paginated.length === 0 ? (
-                <tr>
-                  <td colSpan={EVENT_FIELDS.length} style={{ textAlign: "center", padding: "24px 0" }}>
-                    No events yet...
-                  </td>
-                </tr>
-              ) : (
-                paginated.map(e => (
-                  <tr key={e.event_id} style={styles.tableRow}>
-                    {EVENT_FIELDS.map(field => (
-                      <td key={field} style={styles.tableCell}>
-                        {field === "event_timestamp" || field === "ingestion_time"
-                          ? e[field]
-                            ? new Date(e[field]).toLocaleString()
-                            : "-"
-                          : field === "price" || field === "last_price" || field === "mean_price" || field === "std_dev" || field === "order_value" || field === "user_avg_order_value"
-                          ? typeof e[field] === "number"
-                            ? e[field].toFixed(2)
-                            : renderValue(e[field])
-                          : renderValue(e[field])}
-                      </td>
-                    ))}
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-
-        {/* PAGINATION */}
-        <div style={styles.pagination}>
-          <button style={styles.pageBtn} disabled={page === 1} onClick={() => setPage(page - 1)}>
-            Prev
-          </button>
-
-          <span>Page {page}</span>
-
-          <button
-            style={styles.pageBtn}
-            disabled={page * pageSize >= events.length}
-            onClick={() => setPage(page + 1)}
-          >
-            Next
-          </button>
         </div>
       </div>
 
