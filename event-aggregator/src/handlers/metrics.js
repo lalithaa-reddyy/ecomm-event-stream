@@ -5,55 +5,46 @@ const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const TABLE = process.env.AGG_TABLE;
 
 // ============ MULTI-TIER CACHING STRATEGY ============
-// Tier 1: Full aggregated result (3s TTL) - for most requests
-// Tier 2: Incremental cache - only update changed items
-// Tier 3: Raw DynamoDB items cache (5s TTL) - for faster delta calculations
-const FULL_CACHE_TTL_MS = 3_000;  // 3s - reduces DynamoDB scans by 90%+
-const ITEM_CACHE_TTL_MS = 5_000;  // 5s - incremental updates
-const PARTIAL_CACHE_TTL_MS = 500; // 500ms - recent timeline cache
+// NOTE: Cache disabled - always scan fresh from DynamoDB
+// const FULL_CACHE_TTL_MS = 3_000;  // 3s - reduces DynamoDB scans by 90%+
+// const ITEM_CACHE_TTL_MS = 5_000;  // 5s - incremental updates
+// const PARTIAL_CACHE_TTL_MS = 500; // 500ms - recent timeline cache
 
-let cachedMetrics = null;
-let cacheExpiresAt = 0;
-let cachedItems = null;
-let itemsCacheExpiresAt = 0;
-let lastItemHash = null;
+// let cachedMetrics = null;
+// let cacheExpiresAt = 0;
+// let cachedItems = null;
+// let itemsCacheExpiresAt = 0;
+// let lastItemHash = null;
 
 // ============ FAST ITEM FETCHING ============
-// Instead of scanning entire table, batch-fetch by known prefixes
+// Always scan fresh from DynamoDB - cache disabled
 async function fetchAllItemsFast() {
-  const now = Date.now();
-  
-  // Return cached items if fresh
-  if (cachedItems && now < itemsCacheExpiresAt) {
-    return cachedItems;
-  }
-
   try {
-    // Use filtered scan to get only aggregated items (not raw events)
+    // Always scan - no caching
     const result = await ddb.send(new ScanCommand({
       TableName: TABLE,
-      Limit: 300, // Increased from 200 for more comprehensive data
+      Limit: 300, // Scan up to 300 items
       FilterExpression: "attribute_exists(id)", // Only get items with id (aggregates)
       ConsistentRead: false // Eventual consistency for speed
     }));
 
-    cachedItems = result.Items || [];
-    itemsCacheExpiresAt = now + ITEM_CACHE_TTL_MS;
-    return cachedItems;
+    const items = result.Items || [];
+    console.log(`[METRICS] Scanned ${items.length} items from DynamoDB`);
+    return items;
   } catch (err) {
     console.error("Error fetching items:", err);
-    return cachedItems || []; // Fall back to stale cache
+    throw err;
   }
 }
 
 // ============ DELTA DETECTION ============
-// Only recalculate metrics if data changed
-function generateItemHash(items) {
-  const hashes = items
-    .map(i => `${i.id}:${i.total}:${i.revenue || 0}:${i.orders || 0}`)
-    .join("|");
-  return Math.abs(hashes.split("").reduce((a, b) => a * 31 + b.charCodeAt(0), 0)).toString(36);
-}
+// NOTE: Delta detection disabled - always recalculate
+// function generateItemHash(items) {
+//   const hashes = items
+//     .map(i => `${i.id}:${i.total}:${i.revenue || 0}:${i.orders || 0}`)
+//     .join("|");
+//   return Math.abs(hashes.split("").reduce((a, b) => a * 31 + b.charCodeAt(0), 0)).toString(36);
+// }
 
 /**
  * Parse flat DynamoDB items into dashboard metrics.
@@ -169,52 +160,19 @@ function parseItems(items = []) {
 
 // ============ HANDLER ============
 exports.handler = async () => {
-  const now = Date.now();
-
-  // Check full aggregated cache first (fast path for 90% of requests)
-  if (cachedMetrics && now < cacheExpiresAt) {
-    console.log("[METRICS] Cache HIT (full aggregation)");
-    return {
-      statusCode: 200,
-      headers: {
-        "Content-Type": "application/json",
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "GET, OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type",
-        "X-Cache": "HIT",
-        "X-Cache-Age": Math.floor((cacheExpiresAt - now) / 1000) + "s"
-      },
-      body: cachedMetrics
-    };
-  }
+  const startTime = Date.now();
 
   try {
-    // Fetch items (with its own cache layer)
+    // Always scan fresh from DynamoDB - no caching
     const items = await fetchAllItemsFast();
     
-    // Check if data changed using hash (avoid re-parsing if unchanged)
-    const itemHash = generateItemHash(items);
-    if (cachedMetrics && itemHash === lastItemHash) {
-      console.log("[METRICS] Skipping recalculation - data unchanged");
-      cacheExpiresAt = now + FULL_CACHE_TTL_MS;
-      return {
-        statusCode: 200,
-        headers: {
-          "Content-Type": "application/json",
-          "Access-Control-Allow-Origin": "*",
-          "X-Cache": "HIT-UNCHANGED"
-        },
-        body: cachedMetrics
-      };
-    }
-
-    // Parse and cache metrics
+    // Parse metrics immediately
     const metrics = parseItems(items);
-    cachedMetrics = JSON.stringify(metrics);
-    lastItemHash = itemHash;
-    cacheExpiresAt = now + FULL_CACHE_TTL_MS;
+    const metricsJson = JSON.stringify(metrics);
+    const scanDuration = Date.now() - startTime;
 
-    console.log("[METRICS] Cache MISS - freshly computed");
+    console.log(`[METRICS] Fresh scan complete: ${items.length} items in ${scanDuration}ms`);
+    
     return {
       statusCode: 200,
       headers: {
@@ -222,28 +180,15 @@ exports.handler = async () => {
         "Access-Control-Allow-Origin": "*",
         "Access-Control-Allow-Methods": "GET, OPTIONS",
         "Access-Control-Allow-Headers": "Content-Type",
-        "X-Cache": "MISS",
-        "X-Items-Scanned": items.length
+        "X-Items-Scanned": items.length,
+        "X-Scan-Duration-Ms": scanDuration,
+        "X-Cache": "DISABLED"
       },
-      body: cachedMetrics
+      body: metricsJson
     };
   } catch (err) {
     console.error("[METRICS] Error fetching metrics:", err);
     
-    // If we have stale cache, better to return it than error
-    if (cachedMetrics) {
-      console.warn("[METRICS] Returning stale cache due to error");
-      return {
-        statusCode: 200,
-        headers: {
-          "Content-Type": "application/json",
-          "Access-Control-Allow-Origin": "*",
-          "X-Cache": "STALE"
-        },
-        body: cachedMetrics
-      };
-    }
-
     return {
       statusCode: 500,
       headers: {
