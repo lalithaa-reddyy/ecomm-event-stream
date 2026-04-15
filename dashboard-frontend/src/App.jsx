@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, memo } from "react";
 import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from "recharts";
 
 const API_ENDPOINT = import.meta.env.VITE_API_ENDPOINT;
@@ -87,7 +87,7 @@ function Pulse({ active }) {
 }
 
 // Dashboard Panels
-function OverviewDashboard({ metrics }) {
+const OverviewDashboard = memo(function OverviewDashboard({ metrics }) {
   const avgPerMin = metrics?.dataPoints > 0
     ? Math.round(metrics.totalEvents / metrics.dataPoints).toLocaleString() : "0";
   return (
@@ -171,9 +171,9 @@ function OverviewDashboard({ metrics }) {
       {metrics?.totalEvents === 0 && <EmptyState />}
     </div>
   );
-}
+});
 
-function CampaignDashboard({ metrics }) {
+const CampaignDashboard = memo(function CampaignDashboard({ metrics }) {
   const camps   = metrics?.campaignStats || {};
   const entries = Object.entries(camps).sort((a, b) => (b[1].revenue || 0) - (a[1].revenue || 0));
   const totRev  = entries.reduce((s, [, v]) => s + (v.revenue     || 0), 0);
@@ -206,9 +206,9 @@ function CampaignDashboard({ metrics }) {
       </div>
     </div>
   );
-}
+});
 
-function GeoDashboard({ metrics }) {
+const GeoDashboard = memo(function GeoDashboard({ metrics }) {
   const geo     = metrics?.geoStats || {};
   const entries = Object.entries(geo).sort((a, b) => (b[1].total || 0) - (a[1].total || 0));
   const totTraf = entries.reduce((s, [, v]) => s + (v.total   || 0), 0);
@@ -262,9 +262,9 @@ function GeoDashboard({ metrics }) {
       </Card>
     </div>
   );
-}
+});
 
-function RevenueDashboard({ metrics }) {
+const RevenueDashboard = memo(function RevenueDashboard({ metrics }) {
   const rev        = metrics?.revenueStats  || {};
   const cats       = metrics?.categoryStats || {};
   const geo        = metrics?.geoStats      || {};
@@ -321,9 +321,9 @@ function RevenueDashboard({ metrics }) {
       </div>
     </div>
   );
-}
+});
 
-function AgeSegmentationDashboard({ metrics }) {
+const AgeSegmentationDashboard = memo(function AgeSegmentationDashboard({ metrics }) {
   const ages     = metrics?.ageStats || {};
   const entries  = Object.entries(ages).sort((a, b) => {
     const order = { "13-18":0, "19-25":1, "26-35":2, "36-45":3, "46-55":4, "55+":5 };
@@ -411,7 +411,7 @@ function AgeSegmentationDashboard({ metrics }) {
       </Card>
     </div>
   );
-}
+});
 
 // Tab configuration
 const TABS = [
@@ -429,7 +429,6 @@ export default function App() {
   const [error,         setError]         = useState(null);
   const [lastUpdate,    setLastUpdate]    = useState(null);
   const [activeTab,     setActiveTab]     = useState("overview");
-  const [tick,          setTick]          = useState(0);
   const [countdown,     setCountdown]     = useState(REFRESH_MS / 1000);
 
   const fetchMetrics = async () => {
@@ -440,7 +439,6 @@ export default function App() {
       setMetrics(data);
       setLastUpdate(new Date().toLocaleTimeString());
       setError(null);
-      setTick(t => t + 1);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -454,11 +452,11 @@ export default function App() {
     return () => clearInterval(interval);
   }, []);
 
+  // Simple countdown timer
   useEffect(() => {
-    setCountdown(REFRESH_MS / 1000);
     const t = setInterval(() => setCountdown(c => c <= 1 ? REFRESH_MS / 1000 : c - 1), 1000);
     return () => clearInterval(t);
-  }, [tick]);
+  }, []);
 
   const isLive = (metrics?.totalEvents || 0) > 0;
 

@@ -52,7 +52,7 @@ export default function App() {
     <div style={styles.container}>
       {/* HEADER */}
       <div style={styles.header}>
-        <h1 style={styles.title}>🚀 E-commerce Event Stream</h1>
+        <h1 style={styles.title}> E-commerce Event Stream</h1>
         <p style={styles.subtitle}>Stream Control Dashboard</p>
       </div>
 
@@ -62,7 +62,6 @@ export default function App() {
           <div style={styles.statusSection}>
             <h2 style={styles.cardTitle}>Stream Status</h2>
             <div style={styles.statusIndicator}>
-              <span style={{...styles.statusDot, ...{background: status === "running" ? "#10b981" : "#6b7280"}}}></span>
               <span style={styles.statusText}>{status === "running" ? "🟢 Running" : "🔴 Stopped"}</span>
             </div>
           </div>
