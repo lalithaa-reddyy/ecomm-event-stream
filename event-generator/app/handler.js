@@ -1,8 +1,12 @@
 const crypto = require("crypto");
 const { KinesisClient, PutRecordsCommand } = require("@aws-sdk/client-kinesis");
+const { DynamoDBClient } = require("@aws-sdk/client-dynamodb");
+const { DynamoDBDocumentClient, GetCommand, PutCommand } = require("@aws-sdk/lib-dynamodb");
 
 const kinesis = new KinesisClient({});
+const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const STREAM_NAME = process.env.STREAM_NAME;
+const STATE_TABLE = process.env.STATE_TABLE || "event-generator-state";
 
 if (!STREAM_NAME) {
   throw new Error('STREAM_NAME environment variable not set');
@@ -183,6 +187,49 @@ const checkAnomalies = () => {
   return { isAnomaly: false, anomalyType: null };
 };
 
+/* ============ STATE MANAGEMENT ============ */
+
+async function getGenerationState() {
+  try {
+    const result = await ddb.send(new GetCommand({
+      TableName: STATE_TABLE,
+      Key: { generatorId: "default" }
+    }));
+    return result.Item || { 
+      generatorId: "default", 
+      status: "stopped", 
+      rate: 70000, 
+      startTime: null 
+    };
+  } catch (err) {
+    console.warn("[STATE] Failed to get state:", err.message);
+    return { 
+      generatorId: "default", 
+      status: "stopped", 
+      rate: 70000, 
+      startTime: null 
+    };
+  }
+}
+
+async function setGenerationState(status, rate, startTime) {
+  try {
+    await ddb.send(new PutCommand({
+      TableName: STATE_TABLE,
+      Item: {
+        generatorId: "default",
+        status,
+        rate,
+        startTime,
+        lastUpdated: new Date().toISOString()
+      }
+    }));
+    console.log(`[STATE] Generation state set to: ${status}`);
+  } catch (err) {
+    console.error("[STATE] Failed to set state:", err.message);
+  }
+}
+
 /* ============ ENHANCED EVENT GENERATION ============ */
 
 function generateEnhancedEvent() {
@@ -291,173 +338,206 @@ exports.handler = async (event) => {
   try {
     const body = event.body ? JSON.parse(event.body) : event;
     const action = body.action || "start";
-    const rate = body.rate || 70000;          // events per minute (default 70,000 for 70k+/min)
-    const duration = body.duration || 10;     // seconds - SHORT duration for API Gateway (max 29s)
-    const maxAttempts = body.attempts || 1;   // attempts
+    const rate = body.rate || 70000;
+    const disableTemporal = body.disableTemporal === true;
 
     if (action === "start") {
-      // Validate rate is at least 50,000 per minute
+      // Check if already running
+      const currentState = await getGenerationState();
+      if (currentState.status === "running") {
+        return {
+          statusCode: 200,
+          body: JSON.stringify({
+            message: "⚡ Generation already running",
+            status: "running",
+            rate: currentState.rate,
+            startTime: currentState.startTime,
+            elapsedSeconds: Math.floor((Date.now() - new Date(currentState.startTime).getTime()) / 1000)
+          })
+        };
+      }
+
+      // Validate rate
       if (rate < 50000) {
         console.warn(`⚠️  Rate ${rate} is below minimum 50,000 per minute. Adjusting to 50,000.`);
         rate = 50000;
       }
 
-      // For short durations through API Gateway 
-      if (duration > 29) {
-        console.warn(`⚠️  Duration ${duration}s > 29s API Gateway timeout. Capping at 28s.`);
-        duration = 28;
-      }
+      // Set state to "running"
+      await setGenerationState("running", rate, new Date().toISOString());
 
-      // CloudWatch Structured Logging - Execution Start
       console.log(JSON.stringify({
         eventType: "EXECUTION_START",
         executionId,
         timestamp: new Date().toISOString(),
         action,
         configuredRate: rate,
-        duration,
-        attempts: maxAttempts,
-        temporalVarianceEnabled: !body.disableTemporal
+        temporalVarianceEnabled: !disableTemporal
       }));
 
-      console.log(`🚀 Starting stream: ${rate}/min for ${duration}s`);
+      console.log(`🚀 Starting continuous event generation: ${rate}/min`);
 
-      // Calculate events per second with optional temporal variance
+      // Continuous generation loop (runs until stopped or Lambda timeout ~15min)
       let totalGenerated = 0;
       let failedEvents = 0;
-      const disableTemporal = body.disableTemporal === true;  // Optional flag
       const eventsBySecond = [];
+      const maxExecutionTime = 900000; // 15 minutes in ms (Lambda limit is ~15min)
 
-      for (let attempt = 0; attempt < maxAttempts; attempt++) {
-        console.log(`📊 Attempt ${attempt + 1}/${maxAttempts}`);
-
-        for (let sec = 0; sec < duration; sec++) {
-          // Apply temporal variance only if enabled (default: enabled for realism)
-          let adjustedRate = rate / 60;
-          if (!disableTemporal) {
-            const temporalMultiplier = getTemporalMultiplier();
-            adjustedRate = Math.round(adjustedRate * temporalMultiplier);
-            console.log(`📤 Sec ${sec}: Base ${rate}/min, Temporal ~${temporalMultiplier.toFixed(2)}, Generating ${adjustedRate} events`);
-          } else {
-            console.log(`📤 Sec ${sec}: Generating ${Math.round(adjustedRate)} events at steady rate`);
-          }
-          
-          const events = generateWeightedEvents(Math.round(adjustedRate));
-          
-          try {
-            await streamEventsToKinesis(events);
-            totalGenerated += events.length;
-            eventsBySecond.push(events.length);
-            
-            // CloudWatch Structured Logging - Per-second metrics
-            console.log(JSON.stringify({
-              eventType: "SECOND_BATCH",
-              executionId,
-              timestamp: new Date().toISOString(),
-              second: sec,
-              batchSize: events.length,
-              cumulativeTotal: totalGenerated,
-              attempt: attempt + 1
-            }));
-          } catch (err) {
-            failedEvents += events.length;
-            console.error(JSON.stringify({
-              eventType: "STREAMING_ERROR",
-              executionId,
-              timestamp: new Date().toISOString(),
-              second: sec,
-              error: err.message,
-              failedCount: events.length
-            }));
-          }
-
-          // Wait 1 second (except on last interval)
-          if (sec < duration - 1) {
-            await new Promise(res => setTimeout(res, 1000));
-          }
+      while (true) {
+        // Check if state is still "running"
+        const state = await getGenerationState();
+        if (state.status !== "running") {
+          console.log("[GEN] State changed to stopped, ending generation");
+          break;
         }
+
+        // Check execution time (safety limit)
+        const elapsed = Date.now() - invocationStart;
+        if (elapsed > maxExecutionTime) {
+          console.warn("[GEN] Max execution time reached, stopping");
+          break;
+        }
+
+        // Generate events
+        let adjustedRate = rate / 60;
+        if (!disableTemporal) {
+          const temporalMultiplier = getTemporalMultiplier();
+          adjustedRate = Math.round(adjustedRate * temporalMultiplier);
+        }
+
+        const events = generateWeightedEvents(Math.round(adjustedRate));
+
+        try {
+          await streamEventsToKinesis(events);
+          totalGenerated += events.length;
+          eventsBySecond.push(events.length);
+
+          console.log(JSON.stringify({
+            eventType: "GENERATION_BATCH",
+            executionId,
+            timestamp: new Date().toISOString(),
+            batchSize: events.length,
+            cumulativeTotal: totalGenerated,
+            elapsedSeconds: Math.floor(elapsed / 1000)
+          }));
+        } catch (err) {
+          failedEvents += events.length;
+          console.error(JSON.stringify({
+            eventType: "GENERATION_ERROR",
+            executionId,
+            timestamp: new Date().toISOString(),
+            error: err.message,
+            failedCount: events.length
+          }));
+        }
+
+        // Wait 1 second before next batch
+        await new Promise(res => setTimeout(res, 1000));
       }
 
       const executionTime = Date.now() - invocationStart;
-      const averagePerSecond = eventsBySecond.length > 0 
-        ? Math.round(eventsBySecond.reduce((a, b) => a + b, 0) / eventsBySecond.length) 
+      const averagePerSecond = eventsBySecond.length > 0
+        ? Math.round(eventsBySecond.reduce((a, b) => a + b, 0) / eventsBySecond.length)
         : 0;
 
-      // CloudWatch Structured Logging - Execution Summary
+      // Reset state to stopped
+      await setGenerationState("stopped", 0, null);
+
       const summaryLog = {
-        eventType: "EXECUTION_COMPLETE",
+        eventType: "GENERATION_COMPLETE",
         executionId,
         timestamp: new Date().toISOString(),
         TOTAL_EVENTS_GENERATED: totalGenerated,
         totalFailed: failedEvents,
         totalSuccessful: totalGenerated - failedEvents,
         configuredRate: rate,
-        actualRate: Math.round(totalGenerated / (duration / 60)),
+        actualRate: Math.round(totalGenerated / (executionTime / 60000)),
         averagePerSecond,
-        durationSeconds: duration,
+        durationSeconds: Math.floor(executionTime / 1000),
         executionTimeMs: executionTime,
-        eventsPerSecondBreakdown: eventsBySecond,
         successRate: totalGenerated > 0 ? ((totalGenerated - failedEvents) / totalGenerated * 100).toFixed(2) + '%' : 'N/A'
       };
       console.log(JSON.stringify(summaryLog));
 
-      // Also log metrics for CloudWatch Insights queries
-      console.log(`[METRICS] EVENTS_GENERATED=${totalGenerated} DURATION_SEC=${duration} RATE_PER_MIN=${Math.round(totalGenerated / (duration / 60))} FAILED=${failedEvents} EXEC_TIME_MS=${executionTime}`);
+      return {
+        statusCode: 200,
+        body: JSON.stringify({
+          message: "✅ Continuous generation completed",
+          totalGenerated,
+          failedEvents,
+          eventsPerMinute: rate,
+          actualRate: Math.round(totalGenerated / (executionTime / 60000)),
+          durationSeconds: Math.floor(executionTime / 1000),
+          averagePerSecond,
+          timestamp: new Date().toISOString(),
+          executionId
+        })
+      };
+    } else if (action === "stop") {
+      // Set state to "stopped"
+      await setGenerationState("stopped", 0, null);
 
       return {
         statusCode: 200,
         body: JSON.stringify({
-          message: "✅ Stream completed",
-          totalGenerated,
-          failedEvents,
-          eventsPerMinute: rate,
-          actualRate: Math.round(totalGenerated / (duration / 60)),
-          duration,
-          temporalVariance: "Enabled by default (0.7-1.3), disable with: {disableTemporal: true}",
-          timestamp: new Date().toISOString(),
-          executionId
+          message: "⏹️  Generation stop signal sent",
+          status: "stopped",
+          timestamp: new Date().toISOString()
+        })
+      };
+    } else if (action === "status") {
+      // Get current generation status
+      const state = await getGenerationState();
+      const elapsedSeconds = state.startTime 
+        ? Math.floor((Date.now() - new Date(state.startTime).getTime()) / 1000)
+        : 0;
+
+      return {
+        statusCode: 200,
+        body: JSON.stringify({
+          status: state.status,
+          rate: state.rate,
+          startTime: state.startTime,
+          elapsedSeconds,
+          lastUpdated: state.lastUpdated,
+          timestamp: new Date().toISOString()
         })
       };
     } else if (action === "health") {
       return {
         statusCode: 200,
-        body: JSON.stringify({ 
+        body: JSON.stringify({
           status: "✅ OK",
           minimumRate: 50000,
           defaultRate: 70000,
-          maxDurationViaAPI: 28,
-          maxDurationDirect: 900,
+          maxDuration: 900,
           temporalVariance: "Enabled by default (0.7-1.3)",
           timestamp: new Date().toISOString()
         })
-      };
-    } else if (action === "stop") {
-      return {
-        statusCode: 200,
-        body: JSON.stringify({ message: "⏹️  Streaming ended or never started" })
       };
     } else {
       return {
         statusCode: 400,
         body: JSON.stringify({
           error: "Invalid action",
-          validActions: ["start", "stop", "health"],
-          notes: "For API Gateway: use short duration (1-28 seconds). Call multiple times for continuous generation.",
+          validActions: ["start", "stop", "status", "health"],
+          notes: "start: begins continuous generation, stop: ends generation, status: check current state",
           example: {
             action: "start",
             rate: 70000,
-            duration: 10,
-            attempts: 1,
-            disableTemporal: true
+            disableTemporal: false
           }
         })
       };
     }
   } catch (err) {
-    console.error("❌ Handler error:", err);
+    console.error("[HANDLER] Error:", err.message, err.stack);
     return {
       statusCode: 500,
-      body: JSON.stringify({ error: err.message })
+      body: JSON.stringify({
+        error: err.message,
+        timestamp: new Date().toISOString()
+      })
     };
   }
 };
