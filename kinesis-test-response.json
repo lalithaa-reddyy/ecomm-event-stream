@@ -1,0 +1,1 @@
+{"errorType":"TypeError","errorMessage":"Cannot read properties of undefined (reading 'length')","trace":["TypeError: Cannot read properties of undefined (reading 'length')","    at exports.handler (/var/task/src/handlers/stream.js:310:46)","    at Runtime.handleOnceNonStreaming (file:///var/runtime/index.mjs:1306:29)"]}

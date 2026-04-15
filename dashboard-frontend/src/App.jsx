@@ -173,7 +173,6 @@ function OverviewDashboard({ metrics }) {
   );
 }
 
-
 function CampaignDashboard({ metrics }) {
   const camps   = metrics?.campaignStats || {};
   const entries = Object.entries(camps).sort((a, b) => (b[1].revenue || 0) - (a[1].revenue || 0));
@@ -227,10 +226,10 @@ function GeoDashboard({ metrics }) {
         </Card>
         <Card>
           <SectionTitle>Revenue by City (% of Total)</SectionTitle>
-          {entries.filter(([, v]) => (v.revenue || 0) > 0).length === 0
-            ? <EmptyState msg="No revenue data yet" />
+          {totRev === 0
+            ? <EmptyState msg="No orders yet - revenue will appear after orders are placed" />
             : entries.map(([city, data], i) =>
-                <HBar key={city} label={city} value={data.revenue || 0} maxVal={totRev || 1} color={CAT_PAL[i % CAT_PAL.length]} sub={`${pct(data.revenue || 0, totRev)}%`} />
+                <HBar key={city} label={city} value={data.revenue || 0} maxVal={totRev || 1} color={CAT_PAL[i % CAT_PAL.length]} sub={`${pct(data.revenue || 0, totRev)}% of revenue, ${fmt(data.order_count || 0)} orders`} />
               )
           }
         </Card>
@@ -264,7 +263,6 @@ function GeoDashboard({ metrics }) {
     </div>
   );
 }
-
 
 function RevenueDashboard({ metrics }) {
   const rev        = metrics?.revenueStats  || {};
@@ -313,8 +311,8 @@ function RevenueDashboard({ metrics }) {
         </Card>
         <Card>
           <SectionTitle>Revenue by City (% of Total)</SectionTitle>
-          {geoEntries.length === 0
-            ? <EmptyState msg="No geo revenue yet" />
+          {totGeoRev === 0
+            ? <EmptyState msg="No orders yet - city revenue will appear after orders are placed" />
             : geoEntries.map(([city, data], i) =>
                 <HBar key={city} label={city} value={data.revenue || 0} maxVal={totGeoRev || 1} color={CAT_PAL[i % CAT_PAL.length]} sub={`${pct(data.revenue || 0, totGeoRev)}% of geo revenue, ${fmt(data.order_count || 0)} orders`} />
               )
@@ -334,6 +332,7 @@ function AgeSegmentationDashboard({ metrics }) {
   const totTraf  = entries.reduce((s, [, v]) => s + (v.total || 0), 0);
   const totRev   = entries.reduce((s, [, v]) => s + (v.revenue || 0), 0);
   const totOrd   = entries.reduce((s, [, v]) => s + (v.order_count || 0), 0);
+  const topByTraffic = Object.entries(ages).reduce((max, [k, v]) => !max || v.total > max.total ? { age: k, ...v } : max, null);
   if (entries.length === 0) return <EmptyState msg="Start streaming to see age segment data" />;
 
   return (
@@ -342,7 +341,7 @@ function AgeSegmentationDashboard({ metrics }) {
         <StatBox label="Age Groups" value={entries.length} sub="tracked segments" accent="#63b3ed" />
         <StatBox label="Total Orders (All Ages)" value={fmt(totOrd)} sub="across all age groups" accent="#68d391" />
         <StatBox label="Total Revenue (All Ages)" value={fmtCur(totRev)} sub="age-attributed revenue" accent="#f6ad55" />
-        <StatBox label="Top Age Group" value={entries[0]?.[0] || "-"} sub={entries[0] ? `${fmt(entries[0][1].total)} events` : ""} accent="#d6bcfa" />
+        <StatBox label="Top Age Group" value={topByTraffic?.age || "-"} sub={topByTraffic ? `${fmt(topByTraffic.total)} events` : ""} accent="#d6bcfa" />
       </div>
 
       <Card style={{ marginBottom:20 }}>
@@ -484,12 +483,12 @@ export default function App() {
   };
 
   return (
-    <div style={{ padding:"24px 28px", maxWidth:1320, margin:"0 auto" }}>
+    <div style={{ padding:"24px 28px", maxWidth:1320, margin:"0 auto", background:"#0f1419", minHeight:"100vh", color:"#e2e8f0", fontFamily:"'Segoe UI', sans-serif" }}>
 
       <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:18, flexWrap:"wrap", gap:12 }}>
         <div>
-          <h1 style={{ fontSize:26, fontWeight:800, color:"#e2e8f0", margin:0 }}>Event Stream Analytics</h1>
-          <div style={{ fontSize:12, color:"#4a5568", marginTop:3 }}>Real-time DynamoDB aggregations - GET /stream</div>
+          <h1 style={{ fontSize:26, fontWeight:800, color:"#e2e8f0", margin:0 }}>Event Stream Analytics Dashboard</h1>
+          <div style={{ fontSize:12, color:"#4a5568", marginTop:3 }}>Real-time DynamoDB aggregations - Auto-refresh every {REFRESH_MS / 1000}s</div>
         </div>
         <div style={{ display:"flex", alignItems:"center", gap:10 }}>
           <div style={{ display:"flex", alignItems:"center", background:isLive?"#1a3a2a":"#1e2232", border:`1px solid ${isLive?"#276749":"#2d3748"}`, padding:"7px 14px", borderRadius:24, fontSize:12 }}>
@@ -530,7 +529,7 @@ export default function App() {
       {renderPanel()}
 
       <div style={{ marginTop:28, fontSize:11, color:"#2d3748", textAlign:"right" }}>
-        Last updated: {lastUpdate || "-"} - Auto-refresh every {REFRESH_MS / 1000}s
+        Last updated: {lastUpdate || "-"} - API Endpoint: {API_ENDPOINT}/stream
       </div>
     </div>
   );
