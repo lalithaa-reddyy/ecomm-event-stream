@@ -70,65 +70,60 @@ Resources:
       TimeToLiveSpecification:
         AttributeName: expiresAt
         Enabled: true
+  # ========== S3 BUCKETS (Parquet storage for raw events and aggregations) ==========
+  RawEventsS3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'event-stream-raw-${AWS::AccountId}-${AWS::Region}'
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteOldRawEvents
+            Status: Enabled
+            Prefix: raw-events/
+            ExpirationInDays: 90
+          - Id: TransitionToGlacier
+            Status: Enabled
+            Prefix: raw-events/
+            Transitions:
+              - TransitionInDays: 30
+                StorageClass: INTELLIGENT_TIERING
 
-  # ========== S3 BUCKETS ==========
-  # Note: S3 bucket names must be globally unique and have restricted naming
-  # TODO: Re-enable after resolving naming constraints
-  # Temporary: Use DynamoDB TTL for data archival instead of S3
-  # RawEventsS3Bucket:
-  #   Type: AWS::S3::Bucket
-  #   Properties:
-  #     BucketName: !Sub 'event-stream-raw-${AWS::AccountId}-${AWS::Region}'
-  #     VersioningConfiguration:
-  #       Status: Enabled
-  #     PublicAccessBlockConfiguration:
-  #       BlockPublicAcls: true
-  #       BlockPublicPolicy: true
-  #       IgnorePublicAcls: true
-  #       RestrictPublicBuckets: true
-  #     ServerSideEncryptionConfiguration:
-  #       - ServerSideEncryptionByDefault:
-  #           SSEAlgorithm: AES256
-  #     LifecycleConfiguration:
-  #       Rules:
-  #         - Id: DeleteOldRawEvents
-  #           Status: Enabled
-  #           ExpirationInDays: 90
-  #           Filter:
-  #             Prefix: raw-events/
-  #         - Id: TransitionToGlacier
-  #           Status: Enabled
-  #           Transitions:
-  #             - TransitionInDays: 30
-  #               StorageClass: INTELLIGENT_TIERING
-  #           Filter:
-  #             Prefix: raw-events/
-
-  # AggregationsS3Bucket:
-  #   Type: AWS::S3::Bucket
-  #   Properties:
-  #     BucketName: !Sub 'event-stream-agg-${AWS::AccountId}-${AWS::Region}'
-  #     VersioningConfiguration:
-  #       Status: Enabled
-  #     PublicAccessBlockConfiguration:
-  #       BlockPublicAcls: true
-  #       BlockPublicPolicy: true
-  #       IgnorePublicAcls: true
-  #       RestrictPublicBuckets: true
-  #     ServerSideEncryptionConfiguration:
-  #       - ServerSideEncryptionByDefault:
-  #           SSEAlgorithm: AES256
-  #     LifecycleConfiguration:
-  #       Rules:
-  #         - Id: TransitionOldAggregations
-  #           Status: Enabled
-  #           Transitions:
-  #             - TransitionInDays: 30
-  #               StorageClass: STANDARD_IA
-  #             - TransitionInDays: 60
-  #               StorageClass: GLACIER
-  #           Filter:
-  #             Prefix: aggregations/
+  AggregationsS3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'event-stream-agg-${AWS::AccountId}-${AWS::Region}'
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+          - Id: TransitionOldAggregations
+            Status: Enabled
+            Prefix: aggregations/
+            Transitions:
+              - TransitionInDays: 30
+                StorageClass: STANDARD_IA
+              - TransitionInDays: 60
+                StorageClass: GLACIER
 
   # ========== SNS TOPIC ==========
   AnomalyTopic:
@@ -201,6 +196,15 @@ Resources:
                 Action:
                   - sns:Publish
                 Resource: !Ref AnomalyTopic
+        - PolicyName: S3FullAccessPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:*
+                Resource:
+                  - '*'
 
   MetricsRole:
     Type: AWS::IAM::Role
@@ -271,7 +275,9 @@ Resources:
         Variables:
           AGG_TABLE: !Ref AggregationTable
           SNS_TOPIC_ARN: !Ref AnomalyTopic
-          DEPLOYMENT_ID: "2026-04-15-lambda-fix"
+          RAW_BUCKET: !Sub 'event-stream-raw-${AWS::AccountId}-${AWS::Region}'
+          AGG_BUCKET: !Sub 'event-stream-agg-${AWS::AccountId}-${AWS::Region}'
+          DEPLOYMENT_ID: "2026-04-15-s3-parquet-ready"
       Events:
         KinesisStream:
           Type: Kinesis
@@ -383,17 +389,17 @@ Outputs:
     Export:
       Name: !Sub '${AWS::StackName}-AggregatorArn'
 
-  # RawEventsBucketName:
-  #   Description: S3 bucket for raw event data (Parquet format)
-  #   Value: !Ref RawEventsS3Bucket
-  #   Export:
-  #     Name: !Sub '${AWS::StackName}-RawBucket'
+  RawEventsBucketName:
+    Description: S3 bucket for raw event data (Parquet format)
+    Value: !Ref RawEventsS3Bucket
+    Export:
+      Name: !Sub '${AWS::StackName}-RawBucket'
 
-  # AggregationsBucketName:
-  #   Description: S3 bucket for aggregated data (Parquet format)
-  #   Value: !Ref AggregationsS3Bucket
-  #   Export:
-  #     Name: !Sub '${AWS::StackName}-AggBucket'
+  AggregationsBucketName:
+    Description: S3 bucket for aggregated data (Parquet format)
+    Value: !Ref AggregationsS3Bucket
+    Export:
+      Name: !Sub '${AWS::StackName}-AggBucket'
 
   MetricsFunctionArn:
     Description: Metrics Lambda ARN

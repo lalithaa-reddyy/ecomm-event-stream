@@ -46,6 +46,9 @@ export default function App() {
   const stopStream = () => {
     setStatus("stopped");
     showToast("Stream stopped", false);
+    callAPI("/generate", { 
+      action: "stop" 
+    }, "POST");
   };
 
   return (

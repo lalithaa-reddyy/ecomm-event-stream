@@ -1,6 +1,7 @@
 const { DynamoDBClient } = require("@aws-sdk/client-dynamodb");
 const { DynamoDBDocumentClient, UpdateCommand, BatchWriteCommand } = require("@aws-sdk/lib-dynamodb");
 const { SNSClient, PublishCommand } = require("@aws-sdk/client-sns");
+const { writeEventsToParquet, writeAggregationsToParquet } = require("../utils/parquet-writer");
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const sns = new SNSClient({});
@@ -280,10 +281,42 @@ async function notifyAnomalies(anomalies) {
 }
 
 /* ============ S3 PARQUET WRITE (OPTIMIZED) ============ */
-// TODO: Re-enable once parquetjs dependency is available
-/*
+
+async function writeRawEventsToS3(records) {
+  if (!RAW_BUCKET) {
+    console.warn("[S3] RAW_BUCKET not set, skipping raw events write");
+    return;
+  }
+
+  try {
+    if (records.length === 0) {
+      console.log("[S3] No raw events to write");
+      return;
+    }
+
+    const timestamp = new Date().toISOString().slice(0, 19).replace(/:/g, "-");
+    const prefix = `raw-events/${new Date().toISOString().slice(0, 10)}`;
+    const filename = `events-${timestamp}`;
+
+    const result = await writeEventsToParquet(
+      records,
+      RAW_BUCKET,
+      prefix,
+      filename
+    );
+
+    console.log(`📦 Raw events written to S3: ${result.records} records to ${result.key}`);
+  } catch (err) {
+    console.error("[S3] Raw events write failed:", err.message);
+    throw err;
+  }
+}
+
 async function writeAggregationsToS3(aggregations, startTime) {
-  if (!AGG_BUCKET) return;
+  if (!AGG_BUCKET) {
+    console.warn("[S3] AGG_BUCKET not set, skipping aggregations write");
+    return;
+  }
 
   try {
     const timestamp = new Date().toISOString().slice(0, 19).replace(/:/g, "-");
@@ -328,14 +361,13 @@ async function writeAggregationsToS3(aggregations, startTime) {
         filename
       );
 
-      console.log(`📦 S3 write completed: ${result.records} records to ${result.key}`);
+      console.log(`📦 Aggregations written to S3: ${result.records} records to ${result.key}`);
     }
   } catch (err) {
-    console.error("❌ S3 write failed:", err.message);
+    console.error("[S3] Aggregations write failed:", err.message);
     throw err;
   }
 }
-*/
 
 /* ============ OPTIMIZED HANDLER ============ */
 exports.handler = async (event) => {
@@ -386,15 +418,19 @@ exports.handler = async (event) => {
     // Update DynamoDB (optimized batching)
     await updateDynamoDBBatched(aggregations);
 
-    // TODO: Write aggregations to S3 in Parquet format (async, non-blocking)
-    // Currently disabled due to parquetjs dependency
-    // if (AGG_BUCKET) {
-    //   writeAggregationsToS3(aggregations, startTime).catch(err => 
-    //     console.error("Failed to write aggregations to S3:", err)
-    //   );
-    // } else {
-    //   console.warn("[STREAM] AGG_BUCKET not set, skipping S3 write");
-    // }
+    // Write raw events to S3 (async, non-blocking)
+    if (RAW_BUCKET) {
+      writeRawEventsToS3(records).catch(err => 
+        console.error("[S3] Failed to write raw events to S3:", err.message)
+      );
+    }
+
+    // Write aggregations to S3 (async, non-blocking)
+    if (AGG_BUCKET) {
+      writeAggregationsToS3(aggregations, startTime).catch(err => 
+        console.error("[S3] Failed to write aggregations to S3:", err.message)
+      );
+    }
 
     // Handle anomalies (async, non-blocking)
     if (aggregations.anomalies.length > 0) {

@@ -97,7 +97,14 @@ async function writeEventsToParquet(records, bucket, prefix, filename) {
     };
   } catch (error) {
     console.error(`❌ Failed to write events to Parquet: ${error.message}`);
-    throw error;
+    console.error(`Stack: ${error.stack}`);
+    // Don't throw - return error result instead
+    return {
+      success: false,
+      error: error.message,
+      bucket,
+      timestamp: new Date().toISOString()
+    };
   } finally {
     // Cleanup temp file
     if (fs.existsSync(tmpFile)) {
@@ -179,7 +186,14 @@ async function writeAggregationsToParquet(records, bucket, prefix, filename) {
     };
   } catch (error) {
     console.error(`❌ Failed to write aggregations to Parquet: ${error.message}`);
-    throw error;
+    console.error(`Stack: ${error.stack}`);
+    // Don't throw - return error result instead
+    return {
+      success: false,
+      error: error.message,
+      bucket,
+      timestamp: new Date().toISOString()
+    };
   } finally {
     // Cleanup temp file
     if (fs.existsSync(tmpFile)) {
